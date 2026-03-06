@@ -200,7 +200,7 @@ class CourseController extends Controller
             $courses = Course::where('status', 'active')->get();
             return response()->json([
                 'success' => true,
-                'data' => $courses,
+                'courses' => $courses,
             ]);
         } catch (\Throwable $e) {
             return response()->json([

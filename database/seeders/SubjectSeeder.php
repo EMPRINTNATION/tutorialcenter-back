@@ -336,13 +336,13 @@ class SubjectSeeder extends Seeder
                 'courses' => [2],
                 'departments' => ['science'],
             ],
-            [
-                'name' => 'Agricultural Science',
-                'description' => 'Covers crop production, animal husbandry, and farm management.',
-                'banner' => 'subjects/agricultural-science.png',
-                'courses' => [2],
-                'departments' => ['science'],
-            ],
+            // [
+            //     'name' => 'Agricultural Science',
+            //     'description' => 'Covers crop production, animal husbandry, and farm management.',
+            //     'banner' => 'subjects/agricultural-science.png',
+            //     'courses' => [2],
+            //     'departments' => ['science'],
+            // ],
             [
                 'name' => 'Technical Drawing',
                 'description' => 'Engineering and architectural drawing, projections, and design.',

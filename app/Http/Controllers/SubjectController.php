@@ -203,6 +203,31 @@ class SubjectController extends Controller
     }
 
     /*
+     * Public Method: List subjects by course and department
+     */
+    public function subjectsByCourseAndDepartment(int $courseId, string $department)
+    {
+        try {
+            $subjects = Subject::query()
+                ->where('status', 'active')
+                ->whereJsonContains('courses', $courseId)
+                ->whereJsonContains('departments', $department)
+                ->get();
+
+            return response()->json([
+                'message' => 'Subjects fetched successfully.',
+                'subjects' => $subjects,
+            ], 200);
+
+        } catch (\Throwable $e) {
+            return response()->json([
+                'message' => 'Failed to retrieve subjects.',
+                'error' => config('app.debug') ? $e->getMessage() : null,
+            ], 500);
+        }
+    }
+
+    /*
      * Public Method: Subject enrollment
      */
     public function subjectEnroll(Request $request)
@@ -220,19 +245,20 @@ class SubjectController extends Controller
         }
 
         try {
-            $existingEnrollment = SubjectsEnrollment::where('course_enrollment_id', $request->course_enrollment_id)
+            // Verify subject enrollment exists already for that course and that student
+            $existingEnrollment = SubjectsEnrollment::where('course_enrollment', $request->course_enrollment_id)
                 ->where('subject_id', $request->subject_id)
                 ->where('student_id', $request->student_id)
                 ->first();
-
             if ($existingEnrollment) {
                 return response()->json([
                     'message' => 'Subject already enrolled for this course and student.',
                 ], 409);
             }
 
+            // Create subject enrollment
             SubjectsEnrollment::create([
-                'course_enrollment_id' => $request->course_enrollment_id,
+                'course_enrollment' => $request->course_enrollment_id,
                 'subject_id' => $request->subject_id,
                 'student_id' => $request->student_id,
             ]);
