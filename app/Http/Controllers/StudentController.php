@@ -95,8 +95,8 @@ class StudentController extends Controller
 
             return response()->json([
                 'message' => 'Registration failed. Verification could not be sent.',
-                // 'error' => config('app.debug') ? $e->getMessage() : null,
-                'errors' => $e->getMessage(),
+                'errors' => config('app.debug') ? $e->getMessage() : null,
+                // 'errors' => $e->getMessage(),
             ], 500);
         }
     }
