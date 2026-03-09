@@ -4,19 +4,91 @@ namespace App\Http\Controllers;
 
 use Carbon\Carbon;
 use App\Models\Staff;
+use Illuminate\Support\Str;
 use Illuminate\Http\Request;
 use App\Models\EmailVerification;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Validator;
 use App\Services\EmailVerificationService;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Validation\ValidationException;
 
 class StaffController extends Controller
 {
     /**
-     * Store a newly created staff in storage.
+     * Staff login.
      */
+    public function login(Request $request){
+        try {
+            // 1. Validate input
+            $request->validate([
+                'login' => 'required|string',
+                'password' => 'required|string',
+            ]);
+
+            // 2. Create unique throttle key
+            $throttleKey = Str::lower($request->input('login')) . '|' . $request->ip();
+
+            // 3. Check if user is rate limited
+            if (RateLimiter::tooManyAttempts($throttleKey, 5)) {
+                $seconds = RateLimiter::availableIn($throttleKey);
+                return response()->json([
+                    'message' => "Too many login attempts. Please try again in {$seconds} seconds."
+                ], 429);
+            }
+
+            // 4. Find staff by email or staff_id
+            $staff = Staff::where('email', $request->login)->orWhere('staff_id', $request->login)->first();
+
+            // 5. Validate credentials
+            if (!$staff || !Hash::check($request->password, $staff->password)) {
+
+                RateLimiter::hit($throttleKey, 60); // lock attempt for 60 seconds
+
+                throw ValidationException::withMessages([
+                    'login' => ['Invalid login credentials.'],
+                ]);
+            }
+
+            // 6. Email verification check
+            if (!$staff->email_verified_at) {
+                return response()->json([
+                    'message' => 'Please verify your email before logging in.'
+                ], 403);
+            }
+
+            // 7. Phone verification check
+            if (!$staff->tel_verified_at) {
+                return response()->json([
+                    'message' => 'Please verify your phone number before logging in.'
+                ], 403);
+            }
+
+            // 8. Clear rate limiter after successful login
+            RateLimiter::clear($throttleKey);
+
+            // 9. Remove all existing tokens
+            $staff->tokens()->delete();
+
+            // 10. Create new token
+            $token = $staff->createToken('staff-token')->plainTextToken;
+
+            return response()->json([
+                'message' => 'Login successful.',
+                'token' => $token,
+                'staff' => $staff,
+                'role' => $staff->role,
+            ], 200);
+
+        } catch (\Throwable $e) {
+            return response()->json([
+                'message' => 'Login failed.',
+                'error' => config('app.debug') ? $e->getMessage() : null,
+            ], 500);
+        }
+    }
+    
     public function store(Request $request)
     {
         // 1. Validate input
@@ -334,60 +406,6 @@ class StaffController extends Controller
 
             return response()->json([
                 'message' => 'Failed to resend OTP.',
-                'error' => config('app.debug') ? $e->getMessage() : null,
-            ], 500);
-        }
-    }
-
-    /**
-     * Staff login.
-     */
-    public function login(Request $request)
-    {
-        try {
-            $request->validate([
-                'email' => 'required|email',
-                'password' => 'required|string',
-            ]);
-
-            $staff = Staff::where('email', $request->email)->first();
-
-            if (!$staff || !Hash::check($request->password, $staff->password)) {
-                throw ValidationException::withMessages([
-                    'email' => ['Invalid login credentials.'],
-                ]);
-            }
-
-            // 🔒 Email verification check
-            if (!$staff->email_verified_at) {
-                return response()->json([
-                    'message' => 'Please verify your email before logging in.',
-                ], 403);
-            }
-
-            // 🔒 Phone verification check
-            if (!$staff->tel_verified_at) {
-                return response()->json([
-                    'message' => 'Please verify your phone number before logging in.',
-                ], 403);
-            }
-
-            // Generate token
-            $token = $staff->createToken('staff-token')->plainTextToken;
-
-            return response()->json([
-                'message' => 'Login successful.',
-                'token' => $token,
-                'staff' => [
-                    'id' => $staff->id,
-                    'fullname' => trim("{$staff->firstname} {$staff->middlename} {$staff->surname}"),
-                    'email' => $staff->email,
-                    'role' => $staff->role,
-                ],
-            ]);
-        } catch (\Throwable $e) {
-            return response()->json([
-                'message' => 'Login failed.',
                 'error' => config('app.debug') ? $e->getMessage() : null,
             ], 500);
         }

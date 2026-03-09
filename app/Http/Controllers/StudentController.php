@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\Hash;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Validator;
 use App\Services\EmailVerificationService;
+use Illuminate\Support\Facades\RateLimiter;
 use App\Notifications\StudentEmailVerification;
 
 
@@ -528,8 +529,18 @@ class StudentController extends Controller
         }
 
         try {
+            // Create unique throttle key
+            $throttleKey = Str::lower($request->input('entry')) . '|' . $request->ip();
 
+            // Check if user is rate limited
+            if (RateLimiter::tooManyAttempts($throttleKey, 5)) {
 
+                $seconds = RateLimiter::availableIn($throttleKey);
+
+                return response()->json([
+                    'message' => "Too many login attempts. Please try again in {$seconds} seconds."
+                ], 429);
+            }
             //  Fetch student
             $student = Student::where('email', $request->entry)->orWhere('tel', $request->entry)->first();
 
@@ -542,6 +553,7 @@ class StudentController extends Controller
 
             // Check password
             if (!Hash::check($request->password, $student->password)) {
+                RateLimiter::hit($throttleKey, 60); // lock attempt for 60 seconds
                 return response()->json([
                     'message' => 'Login Fails',
                     'errors' => 'Invalid Login Credentials',
@@ -556,13 +568,19 @@ class StudentController extends Controller
                 ], 403);
             }
 
+            // 8. Clear rate limiter after successful login
+            RateLimiter::clear($throttleKey);
+            
+            //Clearing the token
+            $student->tokens()->delete();
+
             // Create Sanctum token
             $token = $student->createToken('student-token')->plainTextToken;
 
             return response()->json([
                 'message' => 'Login successful.',
                 'token' => $token,
-                'student' => $student
+                'student' => $student,
             ],200);
 
         } catch (\Exception $error) {
