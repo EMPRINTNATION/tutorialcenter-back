@@ -89,6 +89,9 @@ class StaffController extends Controller
         }
     }
     
+    /**
+     * Staff registration (Admin only - enforced in controller)
+     */
     public function store(Request $request)
     {
         // 1. Validate input
@@ -147,10 +150,7 @@ class StaffController extends Controller
             $staffCount = Staff::withTrashed()->count() + 1;
             $staffId = 'TC' . now()->format('ym') . str_pad($staffCount, 4, '0', STR_PAD_LEFT);
 
-            // 5. Auto-generate password
-            // $plainPassword = Str::random(12);
-
-            // 6. Create staff (NOT committed yet)
+            // 5. Create staff (NOT committed yet)
             $staff = Staff::create([
                 'staff_id' => $staffId,
                 'firstname' => $request->firstname,
@@ -168,7 +168,7 @@ class StaffController extends Controller
                 'inducted_by' => $request->inducted_by,
             ]);
 
-            // 7. Send verifications (MUST succeed)
+            // 6. Send verifications (MUST succeed)
             app(EmailVerificationService::class)->send($staff);
             $this->sendPhoneOtp($staff->tel);
 
