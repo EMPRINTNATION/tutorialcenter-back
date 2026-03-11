@@ -3,8 +3,11 @@
 namespace App\Http\Controllers;
 
 use App\Models\ClassSession;
+use App\Models\Course;
 use App\Models\Holiday;
+use App\Models\Subject;
 use Carbon\Carbon;
+use Illuminate\Support\Str;
 use Validator;
 use App\Models\Classes;
 use App\Models\ClassStaff;
@@ -35,67 +38,168 @@ class ClassesController extends Controller
     /**
      * Create a new class
      */
-    public function store(Request $request): JsonResponse
+    public function store(Request $request)
     {
         $validator = Validator::make($request->all(), [
+
             'subject_id' => 'required|exists:subjects,id',
-            'title' => 'required|string|max:255',
+            'title' => 'nullable|string|max:255',
             'description' => 'nullable|string',
             'status' => 'required|in:active,inactive',
+
             'staffs' => 'nullable|array',
-            'staffs.*.staff_id' => 'required|exists:staffs,id',
-            'staffs.*.role' => 'nullable|string|max:255',
-            'schedules' => 'nullable|array',
-            'schedules.*.day_of_week' => 'required|in:sunday,monday,tuesday,wednesday,thursday,friday,saturday',
+            'staffs.*.staff_id' => 'required_with:staffs|exists:staffs,id',
+            'staffs.*.role' => 'nullable|string|max:100',
+
+            'start_date' => 'required|date',
+            'end_date' => 'required|date|after:start_date',
+
+            'schedules' => 'required|array|min:1',
+
+            'schedules.*.day_of_week' => 'required|string|in:sunday,monday,tuesday,wednesday,thursday,friday,saturday',
             'schedules.*.start_time' => 'required|date_format:H:i',
-            'schedules.*.end_time' => 'required|date_format:H:i',
+            'schedules.*.duration_minutes' => 'required|integer|min:1',
+
         ]);
 
         if ($validator->fails()) {
+
             return response()->json([
-                'success' => false,
                 'message' => 'Validation failed',
-                'errors' => $validator->errors(),
+                'errors' => $validator->errors()
             ], 422);
         }
 
         DB::beginTransaction();
-        try {
-            // 1️⃣ Create class
-            $class = Classes::create($validator->validated());
 
-            // 2️⃣ Attach staffs
-            if ($request->filled('staffs')) {
-                $staffData = collect($request->staffs)->mapWithKeys(fn($s) => [
-                    $s['staff_id'] => ['role' => $s['role'] ?? null]
-                ])->toArray();
-                $class->staffs()->attach($staffData);
+        try {
+
+            /*
+            |--------------------------------------------------------------------------
+            | 1. Create Class
+            |--------------------------------------------------------------------------
+            */
+            if (empty($request->title)) {
+
+                $subject = Subject::find($request->subject_id);
+
+                $course = $subject ? Course::find($subject->course_id[0] ?? null) : null;
+
+                $title = 'Untitled Class';
+
+                if ($subject && $course) {
+                    $title = $course->title . ' ' . $subject->name . ' Class';
+                } elseif ($subject) {
+                    $title = $subject->name . ' Class';
+                }
+
+                $request->merge([
+                    'title' => $title
+                ]);
+            }
+            $class = Classes::create([
+                'subject_id' => $request->subject_id,
+                'title' => $request->title,
+                'description' => $request->description,
+                'status' => $request->status
+            ]);
+
+            /*
+            |--------------------------------------------------------------------------
+            | 2. Assign Staff
+            |--------------------------------------------------------------------------
+            */
+
+            if ($request->has('staffs')) {
+
+                $staffData = [];
+
+                foreach ($request->staffs as $staff) {
+
+                    $staffData[$staff['staff_id']] = [
+                        'role' => $staff['role'] ?? null
+                    ];
+                }
+
+                $class->staffs()->sync($staffData);
             }
 
-            // 3️⃣ Create schedules
-            if ($request->filled('schedules')) {
-                foreach ($request->schedules as $schedule) {
-                    $class->schedules()->create([
-                        'day_of_week' => $schedule['day_of_week'],
-                        'start_time' => $schedule['start_time'],
-                        'end_time' => $schedule['end_time'],
-                    ]);
+            /*
+            |--------------------------------------------------------------------------
+            | 3. Create Schedules + Generate Sessions
+            |--------------------------------------------------------------------------
+            */
+
+            $sessionsCreated = 0;
+
+            foreach ($request->schedules as $scheduleData) {
+
+                $endTime = Carbon::createFromFormat('H:i', $scheduleData['start_time'])
+                    ->addMinutes($scheduleData['duration_minutes'])
+                    ->format('H:i');
+
+                $schedule = ClassSchedule::create([
+                    'class_id' => $class->id,
+                    'day_of_week' => $scheduleData['day_of_week'],
+                    'start_time' => $scheduleData['start_time'],
+                    'end_time' => $endTime,
+                    'start_date' => $request->start_date,
+                    'end_date' => $request->end_date
+                ]);
+
+                /*
+                |--------------------------------------------------------------------------
+                | Generate Sessions
+                |--------------------------------------------------------------------------
+                */
+
+                $current = Carbon::parse($request->start_date);
+
+                $current->next($scheduleData['day_of_week']);
+
+                while ($current->lte($request->end_date)) {
+
+                    $isHoliday = Holiday::whereDate('holiday_date', $current)->exists();
+
+                    if (!$isHoliday) {
+
+                        ClassSession::create([
+                            'class_id' => $class->id,
+                            'class_schedule_id' => $schedule->id,
+                            'session_date' => $current->toDateString(),
+                            'starts_at' => $scheduleData['start_time'],
+                            'ends_at' => $endTime,
+                            'class_link' => "https://meet.google.com/" . Str::random(10),
+                            'status' => 'scheduled'
+                        ]);
+
+                        $sessionsCreated++;
+                    }
+
+                    $current->addWeek();
                 }
             }
 
             DB::commit();
+
             return response()->json([
-                'success' => true,
                 'message' => 'Class created successfully',
-                'data' => $class->load('staffs', 'schedules'),
+                'sessions_created' => $sessionsCreated,
+                'class' => $class->load([
+                    'subject',
+                    'staffs',
+                    'schedules',
+                    'sessions'
+                ])
             ], 201);
 
         } catch (\Throwable $e) {
+
             DB::rollBack();
+
             return response()->json([
-                'success' => false,
-                'message' => 'Failed to create class',
-                'error' => config('app.debug') ? $e->getMessage() : null,
+                'message' => 'Class creation failed',
+                'error' => $e->getMessage()
             ], 500);
         }
     }
@@ -299,20 +403,19 @@ class ClassesController extends Controller
      */
     public function createScheduleAndSessions(Request $request)
     {
-        $validated = $request->validate([
-            'class_id' => 'required|exists:classes,id',
-            'start_date' => 'required|date',
-            'end_date' => 'required|date|after:start_date',
-            'schedules' => 'required|array',
-
-            'schedules.*.day_of_week' => 'required|integer|min:0|max:6',
-            'schedules.*.start_time' => 'required|date_format:H:i',
-            'schedules.*.duration_minutes' => 'required|integer|min:1'
-        ]);
-
-        DB::beginTransaction();
-
         try {
+            $validated = $request->validate([
+                'class_id' => 'required|exists:classes,id',
+                'start_date' => 'required|date',
+                'end_date' => 'required|date|after:start_date',
+                'schedules' => 'required|array',
+
+                'schedules.*.day_of_week' => 'required|integer|min:0|max:6',
+                'schedules.*.start_time' => 'required|date_format:H:i',
+                'schedules.*.duration_minutes' => 'required|integer|min:1'
+            ]);
+
+            DB::beginTransaction();
 
             $sessionsCreated = 0;
 
@@ -373,5 +476,25 @@ class ClassesController extends Controller
                 'error' => $e->getMessage()
             ], 500);
         }
+    }
+
+    /**
+     * Reschedule a specific session
+     */
+    public function rescheduleSession(Request $request, $sessionId)
+    {
+        $validated = $request->validate([
+            'session_date' => 'required|date',
+            'starts_at' => 'required',
+            'ends_at' => 'required'
+        ]);
+
+        $session = ClassSession::findOrFail($sessionId);
+
+        $session->update($validated);
+
+        return response()->json([
+            'message' => 'Session rescheduled successfully'
+        ]);
     }
 }

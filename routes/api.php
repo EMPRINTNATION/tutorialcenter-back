@@ -113,12 +113,14 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:ad
 
     // Classes Management
     Route::prefix('classes')->group(function () {
+        // Create class schedule and sessions
+        Route::post('/schedule/sessions', [ClassesController::class, 'createScheduleAndSessions']);
 
         // Get all classes
         Route::get('/', [ClassesController::class, 'index']);
 
         // Create class
-        Route::post('/', [ClassesController::class, 'store']);
+        Route::post('/create', [ClassesController::class, 'store']);
 
         // Get single class
         Route::get('/{id}', [ClassesController::class, 'show']);
