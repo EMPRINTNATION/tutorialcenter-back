@@ -63,7 +63,6 @@ class ClassesController extends Controller
         ]);
 
         if ($validator->fails()) {
-
             return response()->json([
                 'message' => 'Validation failed',
                 'errors' => $validator->errors()
@@ -76,13 +75,13 @@ class ClassesController extends Controller
 
             /*
             |--------------------------------------------------------------------------
-            | 1. Create Class
+            | 1. Generate Class Title If Missing
             |--------------------------------------------------------------------------
             */
+
             if (empty($request->title)) {
 
                 $subject = Subject::find($request->subject_id);
-
                 $course = $subject ? Course::find($subject->course_id[0] ?? null) : null;
 
                 $title = 'Untitled Class';
@@ -93,20 +92,29 @@ class ClassesController extends Controller
                     $title = $subject->name . ' Class';
                 }
 
-                $request->merge([
-                    'title' => $title
-                ]);
+                $request->merge(['title' => $title]);
             }
-            $class = Classes::create([
-                'subject_id' => $request->subject_id,
-                'title' => $request->title,
-                'description' => $request->description,
-                'status' => $request->status
-            ]);
 
             /*
             |--------------------------------------------------------------------------
-            | 2. Assign Staff
+            | 2. Prevent Duplicate Class
+            |--------------------------------------------------------------------------
+            */
+
+            $class = Classes::firstOrCreate(
+                [
+                    'subject_id' => $request->subject_id,
+                    'title' => $request->title
+                ],
+                [
+                    'description' => $request->description,
+                    'status' => $request->status
+                ]
+            );
+
+            /*
+            |--------------------------------------------------------------------------
+            | 3. Assign Staff (Avoid Duplicate Pivot)
             |--------------------------------------------------------------------------
             */
 
@@ -121,12 +129,12 @@ class ClassesController extends Controller
                     ];
                 }
 
-                $class->staffs()->sync($staffData);
+                $class->staffs()->syncWithoutDetaching($staffData);
             }
 
             /*
             |--------------------------------------------------------------------------
-            | 3. Create Schedules + Generate Sessions
+            | 4. Create Schedules + Sessions
             |--------------------------------------------------------------------------
             */
 
@@ -138,18 +146,28 @@ class ClassesController extends Controller
                     ->addMinutes($scheduleData['duration_minutes'])
                     ->format('H:i');
 
-                $schedule = ClassSchedule::create([
-                    'class_id' => $class->id,
-                    'day_of_week' => $scheduleData['day_of_week'],
-                    'start_time' => $scheduleData['start_time'],
-                    'end_time' => $endTime,
-                    'start_date' => $request->start_date,
-                    'end_date' => $request->end_date
-                ]);
+                /*
+                |--------------------------------------------------------------------------
+                | Prevent Duplicate Schedule
+                |--------------------------------------------------------------------------
+                */
+
+                $schedule = ClassSchedule::firstOrCreate(
+                    [
+                        'class_id' => $class->id,
+                        'day_of_week' => $scheduleData['day_of_week'],
+                        'start_time' => $scheduleData['start_time']
+                    ],
+                    [
+                        'end_time' => $endTime,
+                        'start_date' => $request->start_date,
+                        'end_date' => $request->end_date
+                    ]
+                );
 
                 /*
                 |--------------------------------------------------------------------------
-                | Generate Sessions
+                | Generate Weekly Sessions
                 |--------------------------------------------------------------------------
                 */
 
@@ -163,17 +181,23 @@ class ClassesController extends Controller
 
                     if (!$isHoliday) {
 
-                        ClassSession::create([
-                            'class_id' => $class->id,
-                            'class_schedule_id' => $schedule->id,
-                            'session_date' => $current->toDateString(),
-                            'starts_at' => $scheduleData['start_time'],
-                            'ends_at' => $endTime,
-                            'class_link' => "https://meet.google.com/" . Str::random(10),
-                            'status' => 'scheduled'
-                        ]);
+                        $session = ClassSession::firstOrCreate(
+                            [
+                                'class_id' => $class->id,
+                                'class_schedule_id' => $schedule->id,
+                                'session_date' => $current->toDateString()
+                            ],
+                            [
+                                'starts_at' => $scheduleData['start_time'],
+                                'ends_at' => $endTime,
+                                'class_link' => "https://meet.google.com/" . Str::random(10),
+                                'status' => 'scheduled'
+                            ]
+                        );
 
-                        $sessionsCreated++;
+                        if ($session->wasRecentlyCreated) {
+                            $sessionsCreated++;
+                        }
                     }
 
                     $current->addWeek();
