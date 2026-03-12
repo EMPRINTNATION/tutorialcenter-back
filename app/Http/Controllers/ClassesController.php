@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\ClassAttendance;
 use App\Models\ClassSession;
 use App\Models\Course;
 use App\Models\Holiday;
@@ -23,8 +24,7 @@ class ClassesController extends Controller
     /**
      * Create a new class
      */
-    public function store(Request $request)
-    {
+    public function store(Request $request){
         $validator = Validator::make($request->all(), [
 
             'subject_id' => 'required|exists:subjects,id',
@@ -214,10 +214,9 @@ class ClassesController extends Controller
     }
 
     /**
-     * Get student schedule (enrolled classes + upcoming sessions)
+     * Get student schedule with basic session info
      */
-    public function index(Request $request)
-    {
+    public function studentCalenderSchedule(Request $request){
         $student = $request->user();
 
         /*
@@ -279,6 +278,130 @@ class ClassesController extends Controller
 
         return response()->json([
             'sessions' => $sessions
+        ]);
+    }
+
+    /**
+     * Get student schedule with attendance status
+     */
+    public function studentClassSchedule(Request $request){
+        $student = $request->user();
+
+        /*
+        |--------------------------------------------------------------------------
+        | 1. Get Active Enrollments
+        |--------------------------------------------------------------------------
+        */
+
+        $activeEnrollments = $student->courseEnrollments()
+            ->where('status', 'active')
+            ->where('end_date', '>=', now())
+            ->whereHas('payments', function ($q) {
+                $q->where('status', 'successful');
+            })
+            ->pluck('id');
+
+        if ($activeEnrollments->isEmpty()) {
+            return response()->json([
+                'next_class' => null,
+                'today_classes' => [],
+                'week_schedule' => [],
+                'upcoming_sessions' => []
+            ]);
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | 2. Subjects Registered
+        |--------------------------------------------------------------------------
+        */
+
+        $subjectIds = $student->subjectEnrollments()
+            ->whereIn('course_enrollment_id', $activeEnrollments)
+            ->pluck('subject_id');
+
+        /*
+        |--------------------------------------------------------------------------
+        | 3. Base Session Query
+        |--------------------------------------------------------------------------
+        */
+
+        $sessionQuery = ClassSession::with([
+            'class.subject',
+            'class.staffs'
+        ])
+        ->whereHas('class', function ($q) use ($subjectIds) {
+            $q->whereIn('subject_id', $subjectIds)
+            ->where('status', 'active');
+        });
+
+        /*
+        |--------------------------------------------------------------------------
+        | 4. Next Class
+        |--------------------------------------------------------------------------
+        */
+
+        $nextClass = (clone $sessionQuery)
+            ->whereDate('session_date', '>=', now())
+            ->orderBy('session_date')
+            ->orderBy('starts_at')
+            ->first();
+
+        /*
+        |--------------------------------------------------------------------------
+        | 5. Today's Classes
+        |--------------------------------------------------------------------------
+        */
+
+        $todayClasses = (clone $sessionQuery)
+            ->whereDate('session_date', today())
+            ->orderBy('starts_at')
+            ->get();
+
+        /*
+        |--------------------------------------------------------------------------
+        | 6. Weekly Schedule
+        |--------------------------------------------------------------------------
+        */
+
+        $weekSchedule = (clone $sessionQuery)
+            ->whereBetween('session_date', [
+                now()->startOfWeek(),
+                now()->endOfWeek()
+            ])
+            ->orderBy('session_date')
+            ->orderBy('starts_at')
+            ->get()
+            ->groupBy('session_date');
+
+        /*
+        |--------------------------------------------------------------------------
+        | 7. Upcoming Sessions
+        |--------------------------------------------------------------------------
+        */
+
+        $upcomingSessions = (clone $sessionQuery)
+            ->whereDate('session_date', '>=', now())
+            ->orderBy('session_date')
+            ->orderBy('starts_at')
+            ->limit(10)
+            ->get();
+
+        /*
+        |--------------------------------------------------------------------------
+        | 8. Attendance Status
+        |--------------------------------------------------------------------------
+        */
+
+        $attendance = ClassAttendance::where('student_id', $student->id)
+            ->pluck('status', 'class_session_id');
+
+        return response()->json([
+            'next_class' => $nextClass,
+            'today_classes' => $todayClasses,
+            'week_schedule' => $weekSchedule,
+            'upcoming_sessions' => $upcomingSessions,
+            'attendance' => $attendance
         ]);
     }
 
